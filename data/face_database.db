@@ -1,0 +1,292 @@
+import sqlite3
+import os
+import pickle
+import numpy as np
+import cv2
+from datetime import datetime
+
+class FaceDatabase:
+    """Classe para gerenciar o banco de dados de faces"""
+    
+    def __init__(self, db_path="data/face_database.db"):
+        """
+        Inicializa o banco de dados
+        
+        Args:
+            db_path: Caminho para o arquivo do banco de dados SQLite
+        """
+        self.db_path = db_path
+        self._create_database()
+    
+    def _create_database(self):
+        """Cria o banco de dados e tabelas se não existirem"""
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Tabela de pessoas
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS persons (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            additional_info TEXT
+        )
+        ''')
+        
+        # Tabela de faces
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT,
+            face_data BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (person_id) REFERENCES persons (id)
+        )
+        ''')
+        
+        # Tabela de registros de reconhecimento
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS recognition_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT,
+            confidence REAL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            camera_id TEXT,
+            FOREIGN KEY (person_id) REFERENCES persons (id)
+        )
+        ''')
+        
+        conn.commit()
+        conn.close()
+    
+    def add_person(self, person_id, name, additional_info=None):
+        """
+        Adiciona uma nova pessoa ao banco de dados
+        
+        Args:
+            person_id: ID único da pessoa
+            name: Nome da pessoa
+            additional_info: Informações adicionais em formato JSON ou dict
+        
+        Returns:
+            True se bem-sucedido, False caso contrário
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Verificar se a pessoa já existe
+            cursor.execute("SELECT id FROM persons WHERE id = ?", (person_id,))
+            if cursor.fetchone():
+                # Atualizar pessoa existente
+                cursor.execute(
+                    "UPDATE persons SET name = ?, updated_at = ?, additional_info = ? WHERE id = ?",
+                    (name, datetime.now(), str(additional_info), person_id)
+                )
+            else:
+                # Inserir nova pessoa
+                cursor.execute(
+                    "INSERT INTO persons (id, name, additional_info) VALUES (?, ?, ?)",
+                    (person_id, name, str(additional_info))
+                )
+            
+            conn.commit()
+            conn.close()
+            return True
+        
+        except Exception as e:
+            print(f"Erro ao adicionar pessoa: {e}")
+            return False
+    
+    def add_face(self, person_id, face_data):
+        """
+        Adiciona uma face ao banco de dados
+        
+        Args:
+            person_id: ID da pessoa
+            face_data: Dados da face (numpy array)
+        
+        Returns:
+            True se bem-sucedido, False caso contrário
+        """
+        try:
+            # Serializar os dados da face
+            face_blob = pickle.dumps(face_data)
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Verificar se a pessoa existe
+            cursor.execute("SELECT id FROM persons WHERE id = ?", (person_id,))
+            if not cursor.fetchone():
+                print(f"Pessoa com ID {person_id} não encontrada no banco de dados")
+                conn.close()
+                return False
+            
+            # Inserir face
+            cursor.execute(
+                "INSERT INTO faces (person_id, face_data) VALUES (?, ?)",
+                (person_id, face_blob)
+            )
+            
+            conn.commit()
+            conn.close()
+            return True
+        
+        except Exception as e:
+            print(f"Erro ao adicionar face: {e}")
+            return False
+    
+    def get_all_faces(self):
+        """
+        Recupera todas as faces do banco de dados
+        
+        Returns:
+            Lista de tuplas (person_id, face_data)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT f.person_id, f.face_data FROM faces f JOIN persons p ON f.person_id = p.id"
+            )
+            
+            result = []
+            for row in cursor.fetchall():
+                person_id = row[0]
+                face_data = pickle.loads(row[1])
+                result.append((person_id, face_data))
+            
+            conn.close()
+            return result
+        
+        except Exception as e:
+            print(f"Erro ao recuperar faces: {e}")
+            return []
+    
+    def get_person_faces(self, person_id):
+        """
+        Recupera todas as faces de uma pessoa específica
+        
+        Args:
+            person_id: ID da pessoa
+        
+        Returns:
+            Lista de arrays de faces
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT face_data FROM faces WHERE person_id = ?", (person_id,))
+            
+            faces = []
+            for row in cursor.fetchall():
+                face_data = pickle.loads(row[0])
+                faces.append(face_data)
+            
+            conn.close()
+            return faces
+        
+        except Exception as e:
+            print(f"Erro ao recuperar faces da pessoa {person_id}: {e}")
+            return []
+    
+    def get_person_info(self, person_id):
+        """
+        Recupera informações de uma pessoa
+        
+        Args:
+            person_id: ID da pessoa
+        
+        Returns:
+            Dict com informações da pessoa ou None
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT name, additional_info FROM persons WHERE id = ?", 
+                (person_id,)
+            )
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'id': person_id,
+                    'name': row[0],
+                    'additional_info': row[1]
+                }
+            return None
+        
+        except Exception as e:
+            print(f"Erro ao recuperar informações da pessoa {person_id}: {e}")
+            return None
+    
+    def log_recognition(self, person_id, confidence, camera_id="main"):
+        """
+        Registra um evento de reconhecimento
+        
+        Args:
+            person_id: ID da pessoa reconhecida
+            confidence: Nível de confiança do reconhecimento
+            camera_id: ID da câmera que capturou a face
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "INSERT INTO recognition_logs (person_id, confidence, camera_id) VALUES (?, ?, ?)",
+                (person_id, confidence, camera_id)
+            )
+            
+            conn.commit()
+            conn.close()
+        
+        except Exception as e:
+            print(f"Erro ao registrar reconhecimento: {e}")
+    
+    def get_recent_recognitions(self, limit=10):
+        """
+        Recupera os reconhecimentos mais recentes
+        
+        Args:
+            limit: Número máximo de registros a retornar
+        
+        Returns:
+            Lista de dicts com informações de reconhecimento
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row  # Para retornar dicts
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                """
+                SELECT r.id, r.person_id, p.name, r.confidence, r.timestamp, r.camera_id
+                FROM recognition_logs r
+                JOIN persons p ON r.person_id = p.id
+                ORDER BY r.timestamp DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            
+            result = []
+            for row in cursor:
+                result.append(dict(row))
+            
+            conn.close()
+            return result
+        
+        except Exception as e:
+            print(f"Erro ao recuperar reconhecimentos recentes: {e}")
+            return []

@@ -1,99 +1,134 @@
 import cv2
-import numpy as np  
-import dlib
+import numpy as np
+import os
 
 class FaceDetector:
-    """Class to detect faces in a video stream"""
-    def __init__(self, detection_method="hog"):
-        """Initialize the face detector
-        
-        Args:
-            detection_method (str): The method to use for face detection (hog or cnn)
-        """
-        self.detection_method = detection_method
-        self.hog_detector = dlib.get_frontal_face_detector()
-        self.cnn_detector = None
-        if detection_method == "cnn":
-            try:
-                self.cnn_detector = dlib.cnn_face_detection_model_v1("models/mmod_human_face_detector.dat")
-            except Exception as e:
-                print(f"Error loading CNN face detector: {e}")
-                self.detection_method = "hog"
-
-        self.landmarkd_predictor = dlib.shape_predictor("models/shape_predictor_68_face_landmarks.dat")
-
-    def detect_faces(self, frame):
-        """Detect faces in a frame
-        
-        Args:
-            frame (numpy.ndarray): Image/frame to detect faces in
-
-        Returns:
-            list: A list of rectangles containing the detected faces (x, y, w, h)
-        """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        if self.detection_method == "hog":
-            dlib_rects = self.hog_detector(gray, 1)
-            face_rects = []
-            for rect in dlib_rects:
-                x = rect.left()
-                y = rect.top()
-                w = rect.right() - rect.left()
-                h = rect.bottom() - rect.top()
-                face_rects.append((x, y, w, h))
-        else:
-            dlib_mmod_rects = self.cnn_detector(gray, 1)
-            face_rects = []
-            for rect in dlib_mmod_rects:
-                x = rect.rect.left()
-                y = rect.rect.top()
-                w = rect.rect.right() - rect.rect.left()
-                h = rect.rect.bottom() - rect.rect.top()
-                face_rects.append((x, y, w, h))
-        
-        return face_rects
+    """Classe para detecção de faces em imagens"""
     
-    def get_landmarks(self, frame, face_rect):
-        """Get the landmarks of a face
+    def __init__(self, use_haar=False, detection_scale=1.1, detection_neighbors=5):
+        """
+        Inicializa o detector facial
         
         Args:
-            frame (numpy.ndarray): Image/frame to get landmarks in
-            face_rect (tuple): Rectangle containing the face (x, y, w, h)
-
+            use_haar: Se True, usa o detector Haar Cascade (mais rápido, menos preciso)
+                     Se False, usa o detector DNN (mais preciso, mais lento)
+            detection_scale: Fator de escala para detecção (apenas para Haar)
+            detection_neighbors: Número mínimo de vizinhos (apenas para Haar)
+        """
+        self.use_haar = use_haar
+        self.detection_scale = detection_scale
+        self.detection_neighbors = detection_neighbors
+        
+        if use_haar:
+            # Carregar o detector de faces Haar Cascade
+            self.face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        else:
+            # Carregar o detector DNN
+            model_file = "models/res10_300x300_ssd_iter_140000.caffemodel"
+            config_file = "models/deploy.prototxt"
+            
+            # Verificar se os arquivos existem
+            if not os.path.exists(model_file) or not os.path.exists(config_file):
+                print("Arquivos de modelo DNN não encontrados. Usando Haar Cascade como fallback.")
+                self.use_haar = True
+                self.face_cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            else:
+                try:
+                    self.net = cv2.dnn.readNetFromCaffe(config_file, model_file)
+                except Exception as e:
+                    print(f"Erro ao carregar modelo DNN: {e}")
+                    print("Usando Haar Cascade como fallback.")
+                    self.use_haar = True
+                    self.face_cascade = cv2.CascadeClassifier(
+                        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    
+    def detect_faces(self, frame):
+        """
+        Detecta faces em um frame
+        
+        Args:
+            frame: Imagem/frame para detecção
+        
         Returns:
-            Array of shape (68, 2) containing the landmarks of the face
+            Lista de retângulos de faces (x, y, width, height)
+        """
+        if self.use_haar:
+            # Converter para escala de cinza
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # Detectar faces
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=self.detection_scale, 
+                minNeighbors=self.detection_neighbors,
+                minSize=(30, 30)
+            )
+            
+            return faces
+        else:
+            # Usar o detector DNN
+            height, width = frame.shape[:2]
+            blob = cv2.dnn.blobFromImage(
+                cv2.resize(frame, (300, 300)), 1.0,
+                (300, 300), (104.0, 177.0, 123.0)
+            )
+            
+            self.net.setInput(blob)
+            detections = self.net.forward()
+            
+            faces = []
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:  # Limiar de confiança
+                    box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
+                    (startX, startY, endX, endY) = box.astype("int")
+                    
+                    # Converter para formato (x, y, w, h)
+                    x = max(0, startX)
+                    y = max(0, startY)
+                    w = min(width - x, endX - startX)
+                    h = min(height - y, endY - startY)
+                    
+                    # Verificar se a face está dentro dos limites da imagem
+                    if w > 0 and h > 0:
+                        faces.append((x, y, w, h))
+            
+            return faces
+    
+    def align_face(self, frame, face_rect):
+        """
+        Extrai e alinha a face para reconhecimento
+        
+        Args:
+            frame: Imagem/frame
+            face_rect: Retângulo da face (x, y, w, h)
+        
+        Returns:
+            Face extraída e redimensionada
         """
         x, y, w, h = face_rect
-        dlib_rect = dlib.rectangle(left=x, top=y, right=x + w, bottom=y + h)
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        shape = self.landmark_predictor(gray, dlib_rect)
-
-        landmarks = np.array([[p.x, p.y] for p in shape.parts()])
-        return landmarks
+        
+        # Extrair a região da face
+        face = frame[y:y+h, x:x+w]
+        
+        # Redimensionar para um tamanho padrão
+        try:
+            return cv2.resize(face, (160, 160))
+        except Exception as e:
+            print(f"Erro ao redimensionar face: {e}")
+            return None
     
-    def align_face(self, frame, landmarks):
-        """Align a face based on the landmarks for better recognition
-
-        Args:
-            frame (numpy.ndarray): Image/frame to align face in
-            landmarks (numpy.ndarray): Array of shape (68, 2) containing the landmarks of the face
-
-        Returns:
-            Aligned face
+    def set_detection_parameters(self, scale=None, neighbors=None):
         """
-        left_eye = landmarks[36:42].mean(axis=0).astype("int")
-        right_eye = landmarks[42:48].mean(axis=0).astype("int")
-
-        dY = right_eye[1] - left_eye[1]
-        dX = right_eye[0] - left_eye[0]
-        angle = np.degrees(np.arctan2(dY, dX))
-
-        eye_center = ((left_eye[0] + right_eye[0]) // 2, (left_eye[1] + right_eye[1]) // 2)
-
-        M = cv2.getRotationMatrix2D(eye_center, angle, 1.0)
-        height, width = frame.shape[:2]
-        aligned_face = cv2.warpAffine(frame, M, (width, height), flags=cv2.INTER_CUBIC)
-
-        return aligned_face
+        Atualiza os parâmetros de detecção
+        
+        Args:
+            scale: Fator de escala para detecção
+            neighbors: Número mínimo de vizinhos
+        """
+        if scale is not None:
+            self.detection_scale = max(1.01, scale)
+        if neighbors is not None:
+            self.detection_neighbors = max(1, neighbors)
