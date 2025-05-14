@@ -62,3 +62,38 @@ class VideoStream:
 
 class CameraManager:
     """Class to manage multiple video streams"""
+
+    def __init__(self):
+        self.cameras = {}
+
+    def add_camera(self, camera_id, src=0, width=640, height=480):
+        """Add a camera to the manager"""
+        if camera_id in self.cameras:
+            self.cameras[camera_id].stop()
+
+        camera = VideoStream(src=src, name=f"Camera {camera_id}", width=width, height=height)
+        self.cameras[camera_id] = camera
+        return camera
+    
+    def remove_camera(self, camera_id):
+        """Remove a camera from the manager"""
+        if camera_id in self.cameras:
+            self.cameras[camera_id].stop()
+            del self.cameras[camera_id]
+
+    def get_camera(self, camera_id):
+        """Get a camera from the manager"""
+        return self.cameras[camera_id]
+    
+    def get_all_frames(self):
+        """Get all frames from all cameras"""
+        frames = {}
+        for camera_id, camera in self.cameras.items():
+            frames[camera_id] = camera.read()
+        return frames
+    
+    def stop_all(self):
+        """Stop all cameras"""
+        for camera in self.cameras.values():
+            camera.stop()
+        self.cameras = {}
